@@ -1,0 +1,14 @@
+<dict>
+    <string name="name">Out of combat speed</string>
+    <string name="description">Out of combat speed boost</string>
+    
+    <array name="effect-icon"><s>items/icons_consumables.png</s><i>100</i><vec4>225 297 14 14</vec4></array>
+    <array name="hud"><s>gui/icons.png</s><i>100</i><vec4>53 24 12 12</vec4></array>
+
+    <array name="modifiers">
+        <dict>
+            <string name="class">Modifiers::SpeedAdd</string>
+            <float name="move-speed">0.5</float>
+        </dict>
+    </array>
+</dict>
