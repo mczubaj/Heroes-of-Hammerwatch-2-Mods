@@ -46,6 +46,7 @@ class Player : PlayerBase, IPreRenderable
 	int m_shadeSpawnC;
 
 	bool m_gentleTraps;
+	uint64 m_eliteMask;
 
 
 	Player(UnitPtr unit, SValue& params)
@@ -115,6 +116,10 @@ class Player : PlayerBase, IPreRenderable
 		}
 		
 		record.CheckForLevelup();
+
+		m_eliteMask = 0;
+		m_eliteMask = ApplyTag(m_eliteMask, g_actorTags.GetTag("boss"));
+		m_eliteMask = ApplyTag(m_eliteMask, g_actorTags.GetTag("elite"));
 	}
 	
 	int FindUsable(IUsable@ usable)
@@ -214,6 +219,12 @@ class Player : PlayerBase, IPreRenderable
 			m_record.GiveExperience(xpr);
 	}
 
+	void NetRewardStat(Modifiers::ConvertableStat stat)
+	{
+		PrintTrace("NetRewardStat " + stat);
+		m_record.GiveStat(stat);
+	}
+
 	void PlayerKilled(PlayerRecord@ player)
 	{
 	}
@@ -235,6 +246,12 @@ class Player : PlayerBase, IPreRenderable
 				NetShareExperience(xp, killed);
 			}
 			
+			Modifiers::ConvertableStat stat = killed.GetStatReward();
+			if(stat != Modifiers::ConvertableStat::Num)
+			{
+				(Network::Message("PlayerRewardStat") << int(stat)).SendToAll();
+				NetRewardStat(stat);
+			}
 			
 			auto killedUnitStat = Console::Cheats::RegisterKill(killed.m_unit.GetUnitProducer());
 			if (killedUnitStat !is null)
@@ -518,6 +535,30 @@ class Player : PlayerBase, IPreRenderable
 		%STAT Add damage-taken-pure dmg.PureDamage m_record
 
 		int dmgAmnt = dmg.PhysicalDamage + damage_round(dmg.FireDamage * Tweak::FireImmediateDmgScale) + dmg.IceDamage + dmg.LightningDamage + dmg.PureDamage + damage_round(dmg.PoisonDamage * Tweak::PoisonImmmediateDmgScale);
+
+		// serve thorns regardless of amount of damage actually dealt
+		if (dmg.Attacker !is null && !dmg.Attacker.IsDead() && !selfDmg && m_record.currStats.Thorns > 0 && dmg.Melee)
+		{
+			vec2 epos = xy(dmg.Attacker.m_unit.GetPosition());
+			vec2 edir = normalize(xy(dmg.Attacker.m_unit.GetPosition() - m_unit.GetPosition()));
+			
+			uint eweaponInfo = 0;
+		
+			int thorns = m_record.currStats.Thorns;
+			
+			if((dmg.Attacker.Tags & m_eliteMask) != 0)
+			{
+				thorns *= m_record.currStats.ThornsEliteMultiplier;
+			}
+
+			auto newDmg = DamageInfo(this, thorns, false, true, eweaponInfo);
+			newDmg.LifestealMul = 0;
+			
+			newDmg.TrueStrike = true;
+
+			dmg.Attacker.Damage(newDmg, epos, edir);
+		}
+
 		if (dmgAmnt <= 0 && dmg.PoisonDamage <= 0)
 			return 0;
 
@@ -559,7 +600,6 @@ class Player : PlayerBase, IPreRenderable
 		m_record.hp = new;
 		assert(m_record.hp, new);
 		
-		
 		m_healthRegenC = int(Tweak::HealthRegenDelay * modifiers.HealthRegenDelayMul(this));
 		
 		if (!dmg.DoT)
@@ -591,7 +631,7 @@ class Player : PlayerBase, IPreRenderable
 		
 		if (new < 0)
 			OnDeath(dmg, dir);
-			
+		
 		return dmgAmnt;
 	}
 	
@@ -1393,13 +1433,12 @@ class Player : PlayerBase, IPreRenderable
 				moveSpeed = -max(min(-moveSpeed * Tweak::PlayerSpeedBase, Tweak::PlayerSpeedMax), Tweak::PlayerSpeedMin);
 			else
 				moveSpeed = 0;
+
+			if (g_inTown && moveSpeed < 8.0f)
+				moveSpeed = 8.0f;
 			
-			if (g_inTown && moveSpeed < 8.0f) {
-        moveSpeed = 8.0f;
-      }
-      
-      if (m_comboActive)
-        moveSpeed *= 1.2f;
+			if (m_comboActive)
+				moveSpeed *= 1.2f;
 			
 			float minSpeed = m_buffs.MinSpeed();
 			
