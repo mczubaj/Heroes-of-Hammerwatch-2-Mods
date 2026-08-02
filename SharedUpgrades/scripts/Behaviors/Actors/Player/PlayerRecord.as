@@ -63,6 +63,7 @@ class PlayerRecord : IEventPlayerCollectedItem, IEventPlayerLostItem
 	void RegisterSummon(IOwnedUnit@ unit, uint weaponInfo, bool save)
 	{
 		auto prod = unit.GetUnit().GetUnitProducer();
+		//PrintTrace("Register summon call: " + prod.GetDebugName());
 		for (uint i = 0; i < summons.length(); i++)
 		{
 			if (summons[i].m_prod !is prod)
@@ -82,6 +83,32 @@ class PlayerRecord : IEventPlayerCollectedItem, IEventPlayerLostItem
 		entry.m_save.insertLast(save);
 		entry.m_saveData.insertLast(null);
 		summons.insertLast(entry);
+	}
+
+	void RegisterSummonType(UnitProducer@ prod)
+	{
+		//PrintTrace("Register summon type: " + prod.GetDebugName());
+		for (uint i = 0; i < summons.length(); i++)
+		{
+			if (summons[i].m_prod is prod)
+				return;
+		}
+
+		PlayerSummonedEntry entry;
+		@entry.m_prod = prod;
+		summons.insertLast(entry);
+	}
+
+	uint GetSummonsCount()
+	{
+		uint count = 0;
+
+		for (uint i = 0; i < summons.length(); i++)
+		{
+			count += summons[i].m_units.length();
+		}
+		
+		return count;
 	}
 
 
@@ -135,6 +162,12 @@ class PlayerRecord : IEventPlayerCollectedItem, IEventPlayerLostItem
 	pint ngp;
 	pint shortcut;
 	array<pint> materials;
+
+	pint valor;
+	pint hunt;
+	pint arcane;
+	pint avarice;
+	pint benevolence;
 	
 	
 	pint pickedStr;
@@ -182,6 +215,9 @@ class PlayerRecord : IEventPlayerCollectedItem, IEventPlayerLostItem
 	PlayerColors@ skinColor;
 	PlayerColors@ hairColor;
 	array<PlayerPortraitPiece@> portrait;
+	PetDef@ pet;
+	MiniPetOption petOptions;
+	array<PetDef@> unlockedPets;
 
 	uint uniqueKey;
 	int64 saveTime;
@@ -228,6 +264,7 @@ class PlayerRecord : IEventPlayerCollectedItem, IEventPlayerLostItem
 		weaponMasteries.removeRange(0, weaponMasteries.length());
 		attunedTrinkets.removeRange(0, attunedTrinkets.length());
 		missionMaps.removeRange(0, missionMaps.length());
+		unlockedPets.removeRange(0, unlockedPets.length());
 		
 		@equipped = EquippedItems(this);
 		@equipInventory = EquipmentInventory(this);
@@ -264,6 +301,12 @@ class PlayerRecord : IEventPlayerCollectedItem, IEventPlayerLostItem
 		RefreshStats();
 		SyncCharacter();
 		SyncStatPoints();
+
+		auto pb = cast<PlayerBase>(actor);
+		if(pb !is null)
+		{
+			pb.ResetPet();
+		}
 
 		GameEvents::PlayerCreatedCharacter(this);
 		Network::Message("PlayerCreatedCharacter").SendToAll();
@@ -518,6 +561,11 @@ class PlayerRecord : IEventPlayerCollectedItem, IEventPlayerLostItem
 		builder.PushInteger("experience", experience);
 		builder.PushInteger("level", level);
 		builder.PushInteger("ngp", ngp);
+		builder.PushInteger("valor", valor);
+		builder.PushInteger("hunt", hunt);
+		builder.PushInteger("arcane", arcane);
+		builder.PushInteger("avarice", avarice);
+		builder.PushInteger("benevolence", benevolence);
 		builder.PushInteger("shortcut", shortcut);
 		builder.PushInteger("dash-charges", dashCharges);
 		builder.PushInteger("potion-charges-used", potionChargesUsed);
@@ -721,6 +769,23 @@ class PlayerRecord : IEventPlayerCollectedItem, IEventPlayerLostItem
 		} catch { PrintError("Exception when saving portrait"); }
 		builder.PopArray();
 
+		builder.PushInteger("pet", pet is null ? -1 : pet.m_idHash);
+		builder.PushInteger("pet-options", int(petOptions));
+		
+		builder.PushArray("unlocked-pets");
+		try 
+		{
+			for (uint i = 0; i < unlockedPets.length(); i++)
+			{
+				builder.PushInteger(unlockedPets[i].m_idHash);
+			}
+		} 
+		catch 
+		{ 
+			PrintError("Exception when saving pets"); 
+		}
+		builder.PopArray();
+
 
 		if (local)
 		{
@@ -791,6 +856,11 @@ class PlayerRecord : IEventPlayerCollectedItem, IEventPlayerLostItem
 		hp = GetParamFloat(u, data, "hp", false, 1.0);
 		mana = GetParamFloat(u, data, "mana", false, 1.0);
 		experience = GetParamInt(u, data, "experience", false, 0);
+		valor = GetParamInt(u, data, "valor", false, 0);
+		hunt = GetParamInt(u, data, "hunt", false, 0);
+		arcane = GetParamInt(u, data, "arcane", false, 0);
+		avarice = GetParamInt(u, data, "avarice", false, 0);
+		benevolence = GetParamInt(u, data, "benevolence", false, 0);
 		level = GetParamInt(u, data, "level", false, 1);
 		ngp = GetParamInt(u, data, "ngp", false, 0);
 		shortcut = GetParamInt(u, data, "shortcut", false, 0);
@@ -1102,6 +1172,21 @@ class PlayerRecord : IEventPlayerCollectedItem, IEventPlayerLostItem
 				@hairColor = PlayerColors::GetDefaultColor(HashString("hair"));
 		}
 
+
+		@pet = PetDef::Get(uint(GetParamInt(u, data, "pet", false, pet is null ? -1 : pet.m_idHash)));
+		petOptions = MiniPetOption(GetParamInt(u, data, "pet-options", false, -1));
+
+		auto petsArr = GetParamArray(u, data, "unlocked-pets", false);
+		if (petsArr !is null)
+		{
+			unlockedPets.removeRange(0, unlockedPets.length());
+			for (uint i = 0; i < petsArr.length(); i++)
+			{
+				auto pet = PetDef::Get(uint(petsArr[i].GetInteger()));
+				unlockedPets.insertLast(pet);
+			}
+		}
+
 		auto portraitArr = GetParamArray(u, data, "portrait", false);
 		if (portraitArr !is null)
 		{
@@ -1192,10 +1277,10 @@ class PlayerRecord : IEventPlayerCollectedItem, IEventPlayerLostItem
 		
 		if (playerClass is null)
 			return false;
-      
-    if (sMode != StartMode::Continue)
-      SyncShopUpgradesWithOtherCharacters();
-    
+
+		if (sMode != StartMode::Continue)
+			SyncShopUpgradesWithOtherCharacters();
+		
 		return true;
 	}
 
@@ -1237,7 +1322,7 @@ class PlayerRecord : IEventPlayerCollectedItem, IEventPlayerLostItem
 		if (!pickedTempSkills.get(skillDef.m_id, lvlTmp))
 			lvlTmp = 0;
 		
-		return (lvl + lvlTmp) + skillDef.m_startingLevel;
+		return (lvl + lvlTmp) + GetStat(skillDef.m_levelBonusStat) + skillDef.m_startingLevel;
 	}
 
 	int GetSkillPointsSpentOnSkills()
@@ -1258,7 +1343,7 @@ class PlayerRecord : IEventPlayerCollectedItem, IEventPlayerLostItem
 				continue;
 			
 			lvl += skillDef.m_startingLevel;
-			for (int j = skillDef.m_startingLevel; j < lvl; j++)
+			for (int j = skillDef.m_startingLevel; j < lvl && j < skillDef.m_levelSkillCost.length(); j++)
 				spentOnSkills += skillDef.m_levelSkillCost[j];
 		}
 		
@@ -1970,12 +2055,28 @@ class PlayerRecord : IEventPlayerCollectedItem, IEventPlayerLostItem
 		experience = exp;
 	}
 
-	bool CanAddItem(Item::Item@ item)
+	void NetSyncStatReward(int stat, int value)
+	{
+		switch(Modifiers::ConvertableStat(stat))
+		{
+			case Modifiers::ConvertableStat::Valor: valor = value; break;
+			case Modifiers::ConvertableStat::Hunt: hunt = value; break;
+			case Modifiers::ConvertableStat::Arcane: arcane = value; break;
+			case Modifiers::ConvertableStat::Avarice: avarice = value; break;
+			case Modifiers::ConvertableStat::Benevolence: benevolence = value; break;
+		}
+	}
+
+	bool CanAddItem(Item::Item@ item, bool playVoice = true)
 	{
 		auto equip = cast<Equipment::Equipment>(item);
 		if (equip !is null && !equipInventory.CanAdd())
 		{
-			PlayVoice("cant");
+			if(playVoice)
+			{
+				PlayVoice("cant");
+			}
+
 			return false;
 		}
 		
@@ -2013,6 +2114,9 @@ class PlayerRecord : IEventPlayerCollectedItem, IEventPlayerLostItem
 			auto given = GiveMaterial(MaterialType::Gold, valuable.GetPrice());
 			valuableInventory.AddItem(valuable, given);
 			LootLog::PresentMaterial(this, MaterialType::Gold, given);
+			
+			TriggerModifierEffects(Modifiers::EffectTrigger::PickupGold, null);
+			TriggerModifierQuantityEffects(Modifiers::QuantityTrigger::GoldPicked, valuable.GetPrice());
 			
 			%STAT Add valuables-collected 1 this
 			%STAT Add valuables-value given this
@@ -2254,6 +2358,92 @@ class PlayerRecord : IEventPlayerCollectedItem, IEventPlayerLostItem
 		return amount;
 	}
 
+	void GiveStat(Modifiers::ConvertableStat stat)
+	{
+		if(!local)
+		{
+			return;
+		}
+
+		PrintTrace("GiveStat " + stat);
+		int value = 0;
+		switch(stat)
+		{
+			case Modifiers::ConvertableStat::Valor:
+			value = valor = valor + 1;
+			break;
+
+			case Modifiers::ConvertableStat::Hunt:
+			value = hunt = hunt + 1;
+			break;
+
+			case Modifiers::ConvertableStat::Arcane:
+			value = arcane = arcane + 1;
+			break;
+
+			case Modifiers::ConvertableStat::Avarice:
+			value = avarice = avarice + 1;
+			break;
+			
+			case Modifiers::ConvertableStat::Benevolence:
+			value = benevolence = benevolence + 1;
+			break;
+		}
+
+		(Network::Message("PlayerSyncStatReward") << int(stat) << value).SendToAll();
+		currStats.Finalize();
+	}
+
+	int GetStat(Modifiers::ConvertableStat stat)
+	{
+		switch(stat)
+		{
+			case Modifiers::ConvertableStat::Valor:
+				return valor;
+
+			case Modifiers::ConvertableStat::Hunt:
+				return hunt;
+
+			case Modifiers::ConvertableStat::Arcane:
+				return arcane;
+
+			case Modifiers::ConvertableStat::Avarice:
+				return avarice;
+			
+			case Modifiers::ConvertableStat::Benevolence:
+				return benevolence;
+		}
+
+		return 0;
+	}
+
+	void UnlockPet(PetDef@ pet)
+	{
+		for(uint i = 0; i < unlockedPets.length(); i++)
+		{
+			if(unlockedPets[i].m_idHash == pet.m_idHash)
+			{
+				return;
+			}
+		}
+
+		print("Unlocked pet: " + pet.m_name);
+		unlockedPets.insertLast(pet);
+	}
+
+	bool HasPetUnlocked(PetDef@ pet)
+	{
+		for(uint i = 0; i < unlockedPets.length(); i++)
+		{
+			if(unlockedPets[i].m_idHash == pet.m_idHash)
+			{
+				return true;
+			}
+		}
+
+		return false;
+	}
+
 	void PlayVoice(const string &in line, bool usePosition = false)
 	{
 		if (playerVoice is null)
@@ -2402,78 +2592,71 @@ class PlayerRecord : IEventPlayerCollectedItem, IEventPlayerLostItem
 		return 0;
 	}
 	
-
-
+	
+	
 	int GetAvailableSkillpoints() { return 0; }
 
-  void SyncShopUpgradesWithOtherCharacters()
-  {
-    if (g_isSyncingSharedUpgrades)
-      return;
-    
-    g_isSyncingSharedUpgrades = true;
-    auto characters = PersistentSaves::GetCharacterList();
-    dictionary highestUpgrades;
-    
-    for (uint i = 0; i < characters.length(); i++)
-    {
-      if (characters[i] == 0 || characters[i] == uniqueKey)
-        continue;
-      
-      auto plrData = PersistentSaves::GetCharacter(characters[i]);
-      if (plrData is null)
-        continue;
-      
-      PlayerRecord tempRecord;
-      tempRecord.Load(plrData, StartMode::StartGame);
-                
-      for (uint j = 0; j < tempRecord.shopUpgrades.length(); j++)
-      {
-        auto upgrade = tempRecord.shopUpgrades[j];
-        string key = upgrade.shopId + "_" + upgrade.upgrId;
-        
-        int currentHighest = -1;
-        if (highestUpgrades.exists(key))
-          highestUpgrades.get(key, currentHighest);
-        else
-          highestUpgrades.set(key, -1);
-        
-        string upgradeName = (upgrade.upgrade !is null) ? upgrade.upgrade.m_id : "<unknown>";
-        
-        if (upgrade.level > currentHighest)
-          highestUpgrades.set(key, upgrade.level);
-      }
-    }
-    
-    array<string> keys = highestUpgrades.getKeys();
-    bool upgradesChanged = false;
-        
-    for (uint i = 0; i < keys.length(); i++)
-    {
-      string[] parts = keys[i].split("_");
-      if (parts.length() != 2)
-        continue;
-          
-      uint shopId = parseInt(parts[0]);
-      uint upgradeId = parseInt(parts[1]);
-      
-      int highestLevel = 0;
-      highestUpgrades.get(keys[i], highestLevel);
-      
-      int currentLevel = GetShopUpgradeLevel(shopId, upgradeId);
-      
-      if (highestLevel > currentLevel)
-      {
-        SetShopUpgradeLevel(shopId, upgradeId, highestLevel);
-        upgradesChanged = true;
-      }
-    }
-    
-    if (upgradesChanged)
-      RefreshModifiers();
-    
-    g_isSyncingSharedUpgrades = false;
-  }
+	void SyncShopUpgradesWithOtherCharacters()
+	{
+		if (g_isSyncingSharedUpgrades)
+			return;
+
+		g_isSyncingSharedUpgrades = true;
+		auto characters = PersistentSaves::GetCharacterList();
+		dictionary highestUpgrades;
+
+		for (uint i = 0; i < characters.length(); i++)
+		{
+			if (characters[i] == 0 || characters[i] == uniqueKey)
+				continue;
+
+			auto plrData = PersistentSaves::GetCharacter(characters[i]);
+			if (plrData is null)
+				continue;
+
+			PlayerRecord tempRecord;
+			tempRecord.Load(plrData, StartMode::StartGame);
+
+			for (uint j = 0; j < tempRecord.shopUpgrades.length(); j++)
+			{
+				auto upgrade = tempRecord.shopUpgrades[j];
+				string key = upgrade.shopId + "_" + upgrade.upgrId;
+
+				int currentHighest = -1;
+				if (highestUpgrades.exists(key))
+					highestUpgrades.get(key, currentHighest);
+
+				if (upgrade.level > currentHighest)
+					highestUpgrades.set(key, upgrade.level);
+			}
+		}
+
+		array<string> keys = highestUpgrades.getKeys();
+		bool upgradesChanged = false;
+
+		for (uint i = 0; i < keys.length(); i++)
+		{
+			string[] parts = keys[i].split("_");
+			if (parts.length() != 2)
+				continue;
+
+			uint shopId = parseInt(parts[0]);
+			uint upgradeId = parseInt(parts[1]);
+			int highestLevel = -1;
+			highestUpgrades.get(keys[i], highestLevel);
+
+			if (highestLevel > GetShopUpgradeLevel(shopId, upgradeId))
+			{
+				SetShopUpgradeLevel(shopId, upgradeId, highestLevel);
+				upgradesChanged = true;
+			}
+		}
+
+		if (upgradesChanged)
+			RefreshModifiers();
+
+		g_isSyncingSharedUpgrades = false;
+	}
 }
 
 float GetLevelDifferenceExperienceMul(float plrLvl, float diffLvl)
@@ -2542,7 +2725,7 @@ void DemoExpFormula()
 		
 		print("Exp gain for plr lvl " + lvls[a] + " playing content lvl: " + str);
 	}
-
-
-
+	
+	
+	
 }

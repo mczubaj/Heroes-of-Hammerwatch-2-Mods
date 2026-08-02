@@ -46,8 +46,10 @@ class Player : PlayerBase, IPreRenderable
 	int m_shadeSpawnC;
 
 	bool m_gentleTraps;
+	uint64 m_eliteMask;
 
 	OutOfCombatSpeedManager@ m_outOfCombatSpeed;
+
 
 	Player(UnitPtr unit, SValue& params)
 	{
@@ -83,7 +85,7 @@ class Player : PlayerBase, IPreRenderable
 		m_unit.SetShouldCollide(!GetVarBool("cht_noclip"));
 		m_unit.SetHidden(GetVarBool("cht_plr_hidden"));
 
-    @m_outOfCombatSpeed = OutOfCombatSpeedManager(this);
+		@m_outOfCombatSpeed = OutOfCombatSpeedManager(this);
 		
 		vec2 pos = xy(m_unit.GetPosition());
 		for (uint i = 0; i < record.summons.length(); i++)
@@ -118,6 +120,10 @@ class Player : PlayerBase, IPreRenderable
 		}
 		
 		record.CheckForLevelup();
+
+		m_eliteMask = 0;
+		m_eliteMask = ApplyTag(m_eliteMask, g_actorTags.GetTag("boss"));
+		m_eliteMask = ApplyTag(m_eliteMask, g_actorTags.GetTag("elite"));
 	}
 	
 	int FindUsable(IUsable@ usable)
@@ -217,6 +223,12 @@ class Player : PlayerBase, IPreRenderable
 			m_record.GiveExperience(xpr);
 	}
 
+	void NetRewardStat(Modifiers::ConvertableStat stat)
+	{
+		PrintTrace("NetRewardStat " + stat);
+		m_record.GiveStat(stat);
+	}
+
 	void PlayerKilled(PlayerRecord@ player)
 	{
 	}
@@ -238,6 +250,12 @@ class Player : PlayerBase, IPreRenderable
 				NetShareExperience(xp, killed);
 			}
 			
+			Modifiers::ConvertableStat stat = killed.GetStatReward();
+			if(stat != Modifiers::ConvertableStat::Num)
+			{
+				(Network::Message("PlayerRewardStat") << int(stat)).SendToAll();
+				NetRewardStat(stat);
+			}
 			
 			auto killedUnitStat = Console::Cheats::RegisterKill(killed.m_unit.GetUnitProducer());
 			if (killedUnitStat !is null)
@@ -378,8 +396,8 @@ class Player : PlayerBase, IPreRenderable
 		if (g_gameMode.m_gameTime - m_spawnTime < Tweak::SpawnInvulnTime)
 			return 0;
 
-    if (m_outOfCombatSpeed !is null)
-      m_outOfCombatSpeed.OnPlayerDamaged();
+		if (m_outOfCombatSpeed !is null)
+			m_outOfCombatSpeed.OnPlayerDamaged();
 
 		float dmgTakenMul = g_mpPlrDmgTakenScale;
 
@@ -524,6 +542,30 @@ class Player : PlayerBase, IPreRenderable
 		%STAT Add damage-taken-pure dmg.PureDamage m_record
 
 		int dmgAmnt = dmg.PhysicalDamage + damage_round(dmg.FireDamage * Tweak::FireImmediateDmgScale) + dmg.IceDamage + dmg.LightningDamage + dmg.PureDamage + damage_round(dmg.PoisonDamage * Tweak::PoisonImmmediateDmgScale);
+
+		// serve thorns regardless of amount of damage actually dealt
+		if (dmg.Attacker !is null && !dmg.Attacker.IsDead() && !selfDmg && m_record.currStats.Thorns > 0 && dmg.Melee)
+		{
+			vec2 epos = xy(dmg.Attacker.m_unit.GetPosition());
+			vec2 edir = normalize(xy(dmg.Attacker.m_unit.GetPosition() - m_unit.GetPosition()));
+			
+			uint eweaponInfo = 0;
+		
+			int thorns = m_record.currStats.Thorns;
+			
+			if((dmg.Attacker.Tags & m_eliteMask) != 0)
+			{
+				thorns *= m_record.currStats.ThornsEliteMultiplier;
+			}
+
+			auto newDmg = DamageInfo(this, thorns, false, true, eweaponInfo);
+			newDmg.LifestealMul = 0;
+			
+			newDmg.TrueStrike = true;
+
+			dmg.Attacker.Damage(newDmg, epos, edir);
+		}
+
 		if (dmgAmnt <= 0 && dmg.PoisonDamage <= 0)
 			return 0;
 
@@ -565,7 +607,6 @@ class Player : PlayerBase, IPreRenderable
 		m_record.hp = new;
 		assert(m_record.hp, new);
 		
-		
 		m_healthRegenC = int(Tweak::HealthRegenDelay * modifiers.HealthRegenDelayMul(this));
 		
 		if (!dmg.DoT)
@@ -597,7 +638,7 @@ class Player : PlayerBase, IPreRenderable
 		
 		if (new < 0)
 			OnDeath(dmg, dir);
-			
+		
 		return dmgAmnt;
 	}
 	
@@ -1045,15 +1086,15 @@ class Player : PlayerBase, IPreRenderable
 		PlayerBase::Update(dt);
 %PROFILE_STOP
 
-  if (m_outOfCombatSpeed !is null)
-    m_outOfCombatSpeed.Update(dt);
-
 %PROFILE_START Buffs
+		if (m_outOfCombatSpeed !is null)
+			m_outOfCombatSpeed.Update(dt);
+
 		auto buffDmg = m_buffs.Update(dt);
 		if (buffDmg !is null)
 		{
-      if (m_outOfCombatSpeed !is null)
-        m_outOfCombatSpeed.OnPlayerDamaged();
+			if (m_outOfCombatSpeed !is null)
+				m_outOfCombatSpeed.OnPlayerDamaged();
 
 			int dmgAmnt = buffDmg.Damage;
 			if (!buffDmg.CanKill)
@@ -1344,8 +1385,8 @@ class Player : PlayerBase, IPreRenderable
 			}
 %PROFILE_STOP
 
-      if (m_outOfCombatSpeed !is null)
-        m_outOfCombatSpeed.HandleManualToggle(dt);
+		if (m_outOfCombatSpeed !is null)
+			m_outOfCombatSpeed.HandleManualToggle(dt);
 		}
 
 
